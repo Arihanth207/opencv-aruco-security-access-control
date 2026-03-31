@@ -20,7 +20,7 @@
 | **Arihanth** | **Adityan** | **Sakthi** |
 |:---:|:---:|:---:|
 | Core Detection Pipeline | Pose Estimation & Overlay | Tamper Detection Enhancement |
-| [@arihanth](https://github.com/arihanth) | [@adityan](https://github.com/adityan) | [@sakthi](https://github.com/sakthi) |
+| [@arihanth](https://github.com/Arihanth207) | [@adityan](https://github.com/adityanb2025) | [@sakthi](https://github.com/sakthirithulgit02) |
 
 </div>
 
