@@ -7,9 +7,9 @@
  * Language : C++17
  *
  * Team:
- *   Arihanth — Core detection pipeline       (this file)
- *   Adityan  — Pose estimation & overlay     (coming in PR #2)
- *   Sakthi   — Tamper detection enhancement  (coming in PR #3)
+ * Arihanth — Core detection pipeline       (PR #1 - this branch)
+ * Adityan  — Pose estimation & overlay     (coming in PR #2)
+ * Sakthi   — Tamper detection enhancement  (coming in PR #3)
  *
  * Core Method Analysed: cv::aruco::detectMarkers()
  * ============================================================
@@ -27,11 +27,10 @@
 #include <sstream>
 
 // ─── Access Level Database ─────────────────────────────────────────────────
-// Maps each ArUco marker ID to an access level and zone
 struct AccessRule {
-    std::string level;   // GUEST | STAFF | ADMIN
-    std::string zone;    // physical zone this badge grants entry to
-    cv::Scalar  colour;  // BGR colour used for annotation overlay
+    std::string level;   
+    std::string zone;    
+    cv::Scalar  colour;  
 };
 
 static const std::map<int, AccessRule> ACCESS_DB = {
@@ -62,12 +61,11 @@ std::string currentTime()
     return ss.str();
 }
 
-// ─── Core: process one badge image ────────────────────────────────────────
+// ─── Core: process one badge image (Arihanth's Base Pipeline) ─────────────
 void processBadge(const std::string& imgPath,
                   const std::string& outDir,
                   std::ofstream&     logFile)
 {
-    // Load image
     cv::Mat img = cv::imread(imgPath);
     if (img.empty()) {
         std::cerr << "[WARN] Cannot read image: " << imgPath << "\n";
@@ -75,8 +73,6 @@ void processBadge(const std::string& imgPath,
     }
 
     // ── Step 1: Setup ArUco dictionary ────────────────────────────────────
-    // DICT_4X4_50: 4x4 binary grid, 50 possible IDs
-    // Chosen for badge use — compact, fast, low false-positive rate
     cv::Ptr<cv::aruco::Dictionary> dict =
         cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
 
@@ -84,27 +80,13 @@ void processBadge(const std::string& imgPath,
     cv::Ptr<cv::aruco::DetectorParameters> params =
         cv::aruco::DetectorParameters::create();
 
-    // Sub-pixel corner refinement for accurate marker localisation
     params->cornerRefinementMethod    = cv::aruco::CORNER_REFINE_SUBPIX;
-    // Adaptive threshold window range — handles varying badge print quality
     params->adaptiveThreshWinSizeMin  = 7;
     params->adaptiveThreshWinSizeMax  = 53;
     params->adaptiveThreshWinSizeStep = 10;
-    // Minimum marker size relative to image — filters out noise
     params->minMarkerPerimeterRate    = 0.02;
 
     // ── Step 3: Detect ArUco markers ──────────────────────────────────────
-    //
-    // detectMarkers() is the core method of this case study.
-    //
-    // Internally it performs:
-    //   (a) Greyscale conversion
-    //   (b) Adaptive thresholding  — isolates dark square regions
-    //   (c) Contour detection      — finds quad-shaped candidates
-    //   (d) Perspective warp       — normalises each candidate
-    //   (e) Hamming distance match — decodes binary ID from grid
-    //   (f) Sub-pixel refinement   — precise corner positions
-    //
     std::vector<int>                      ids;
     std::vector<std::vector<cv::Point2f>> corners, rejected;
 
@@ -114,7 +96,6 @@ void processBadge(const std::string& imgPath,
 
     double detMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    // Draw detected marker borders on a copy of the image
     cv::Mat annotated = img.clone();
     if (!ids.empty())
         cv::aruco::drawDetectedMarkers(annotated, corners, ids);
@@ -128,7 +109,6 @@ void processBadge(const std::string& imgPath,
     for (size_t i = 0; i < ids.size(); ++i) {
         int id = ids[i];
 
-        // Lookup marker ID in access database
         auto it = ACCESS_DB.find(id);
         std::string level  = (it != ACCESS_DB.end()) ? it->second.level  : "UNKNOWN";
         std::string zone   = (it != ACCESS_DB.end()) ? it->second.zone   : "-";
@@ -142,7 +122,6 @@ void processBadge(const std::string& imgPath,
             overallColour = colour;
         }
 
-        // Label each marker with its ID and access level
         cv::Point2f centre(0.f, 0.f);
         for (auto& p : corners[i]) centre += p;
         centre *= 0.25f;
@@ -153,7 +132,7 @@ void processBadge(const std::string& imgPath,
                     cv::FONT_HERSHEY_SIMPLEX, 0.6,
                     cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
 
-        std::cout << "  Marker " << std::setw(3) << id
+        std::cout << "  Access ID " << std::setw(3) << id
                   << "  |  Level: " << std::setw(8) << level
                   << "  |  Zone: "  << zone << "\n";
     }
@@ -179,13 +158,11 @@ void processBadge(const std::string& imgPath,
                 cv::FONT_HERSHEY_SIMPLEX, 0.70,
                 cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
 
-    // Timestamp bottom-right
     cv::putText(annotated, currentTime(),
                 cv::Point(annotated.cols - 245, annotated.rows - 10),
                 cv::FONT_HERSHEY_SIMPLEX, 0.42,
                 cv::Scalar(190, 190, 190), 1, cv::LINE_AA);
 
-    // Detection stats bottom-left
     std::ostringstream stats;
     stats << "Detect: " << std::fixed << std::setprecision(1)
           << detMs << " ms  |  Markers: " << ids.size();
@@ -203,15 +180,15 @@ void processBadge(const std::string& imgPath,
 
     // ── Step 7: Write JSON log entry ──────────────────────────────────────
     logFile << "  {\n"
-            << "    \"image\": \""      << imgPath      << "\",\n"
+            << "    \"image\": \""      << imgPath       << "\",\n"
             << "    \"timestamp\": \""  << currentTime() << "\",\n"
-            << "    \"markers\": "      << ids.size()   << ",\n"
+            << "    \"markers\": "      << ids.size()    << ",\n"
             << "    \"ids\": [";
     for (size_t i = 0; i < ids.size(); ++i)
         logFile << ids[i] << (i + 1 < ids.size() ? ", " : "");
     logFile << "],\n"
-            << "    \"access_level\": \"" << overallLevel << "\",\n"
-            << "    \"zone\": \""          << overallZone  << "\",\n"
+            << "    \"access_level\": \"" << overallLevel  << "\",\n"
+            << "    \"zone\": \""          << overallZone   << "\",\n"
             << "    \"granted\": "         << (granted ? "true" : "false") << ",\n"
             << "    \"detection_ms\": "
             << std::fixed << std::setprecision(2) << detMs << "\n"
@@ -226,7 +203,6 @@ int main(int argc, char** argv)
               << "║  ArUco Security Access Control System — OpenCV 4.6  ║\n"
               << "╚══════════════════════════════════════════════════════╝\n\n";
 
-    // Collect input images from args or default images/ folder
     std::vector<std::string> images;
     if (argc > 1) {
         for (int i = 1; i < argc; ++i)
