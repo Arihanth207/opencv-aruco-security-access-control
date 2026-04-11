@@ -198,6 +198,9 @@ void processBadge(const std::string& imgPath,
 // ─── Entry point ──────────────────────────────────────────────────────────
 int main(int argc, char** argv)
 {
+    // Entry point: scans all JPG/PNG images in images/ folder
+    // Outputs annotated results to results/ folder  
+    // Logs all access decisions to results/access_log.json
     std::cout << "\n"
               << "╔══════════════════════════════════════════════════════╗\n"
               << "║  ArUco Security Access Control System — OpenCV 4.6  ║\n"
