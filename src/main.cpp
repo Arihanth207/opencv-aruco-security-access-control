@@ -105,9 +105,9 @@ void estimateAndDrawPose(
 
         // Calculate Euclidean distance from camera to marker (in metres)
         double distance = cv::norm(tvecs[i]);
-// Deep Analysis: Convert the 3x1 rotation vector into a 3x3 rotation matrix
-// This allows us to extract human-readable Euler angles (Roll, Pitch, Yaw)
-        // Convert rotation vector to rotation matrix for angle extraction
+        
+        // Deep Analysis: Convert the 3x1 rotation vector into a 3x3 rotation matrix
+        // This allows us to extract human-readable Euler angles (Roll, Pitch, Yaw)
         cv::Mat rotMatrix;
         cv::Rodrigues(rvecs[i], rotMatrix);
 
@@ -142,7 +142,7 @@ void estimateAndDrawPose(
     }
 }
 
-// ─── Core: process one badge image ────────────────────────────────────────
+// ─── Core: process one badge image (Arihanth's Base Pipeline) ─────────────
 void processBadge(const std::string& imgPath,
                   const std::string& outDir,
                   std::ofstream&     logFile)
@@ -293,6 +293,9 @@ void processBadge(const std::string& imgPath,
 // ─── Entry point ──────────────────────────────────────────────────────────
 int main(int argc, char** argv)
 {
+    // Entry point: scans all JPG/PNG images in images/ folder
+    // Outputs annotated results to results/ folder  
+    // Logs all access decisions to results/access_log.json
     std::cout << "\n"
               << "╔══════════════════════════════════════════════════════╗\n"
               << "║  ArUco Security Access Control System — OpenCV 4.6  ║\n"
