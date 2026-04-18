@@ -105,7 +105,8 @@ void estimateAndDrawPose(
 
         // Calculate Euclidean distance from camera to marker (in metres)
         double distance = cv::norm(tvecs[i]);
-
+// Deep Analysis: Convert the 3x1 rotation vector into a 3x3 rotation matrix
+// This allows us to extract human-readable Euler angles (Roll, Pitch, Yaw)
         // Convert rotation vector to rotation matrix for angle extraction
         cv::Mat rotMatrix;
         cv::Rodrigues(rvecs[i], rotMatrix);
