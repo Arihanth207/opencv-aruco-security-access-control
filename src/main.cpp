@@ -7,8 +7,8 @@
  * Language : C++17
  *
  * Team:
- * Arihanth — Core detection pipeline       (PR #1 - this branch)
- * Adityan  — Pose estimation & overlay     (coming in PR #2)
+ * Arihanth — Core detection pipeline       (PR #1 - merged)
+ * Adityan  — Pose estimation & overlay     (PR #2 - this branch)
  * Sakthi   — Tamper detection enhancement  (coming in PR #3)
  *
  * Core Method Analysed: cv::aruco::detectMarkers()
@@ -27,10 +27,11 @@
 #include <sstream>
 
 // ─── Access Level Database ─────────────────────────────────────────────────
+// Maps each ArUco marker ID to an access level and zone
 struct AccessRule {
-    std::string level;   
-    std::string zone;    
-    cv::Scalar  colour;  
+    std::string level;   // GUEST | STAFF | ADMIN
+    std::string zone;    // physical zone this badge grants entry to
+    cv::Scalar  colour;  // BGR colour used for annotation overlay
 };
 
 static const std::map<int, AccessRule> ACCESS_DB = {
@@ -61,11 +62,92 @@ std::string currentTime()
     return ss.str();
 }
 
+// ─── Pose Estimation: Added by Adityan (PR #2) ────────────────────────────
+/**
+ * estimateAndDrawPose()
+ *
+ * Estimates the 3D pose of each detected ArUco marker using
+ * cv::aruco::estimatePoseSingleMarkers() which internally calls solvePnP.
+ *
+ * solvePnP solves the Perspective-n-Point problem:
+ * Given 4 known 3D corner points of a marker and their 2D projections
+ * in the image, compute the rotation (rvec) and translation (tvec)
+ * vectors that describe the marker's pose relative to the camera.
+ *
+ * Output:
+ * - 3D coordinate axes drawn on each marker (X=red, Y=green, Z=blue)
+ * - Distance from camera displayed next to each marker
+ * - Rotation angles (roll, pitch, yaw) logged to console
+ */
+void estimateAndDrawPose(
+    cv::Mat&                                     annotated,
+    const std::vector<std::vector<cv::Point2f>>& corners,
+    const std::vector<int>&                      ids,
+    const cv::Mat&                               cameraMatrix,
+    const cv::Mat&                               distCoeffs,
+    float                                        markerLength)
+{
+    if (ids.empty()) return;
+
+    // Estimate rotation and translation vectors for each marker
+    // rvec: rotation vector (Rodrigues format)
+    // tvec: translation vector (x, y, z in metres from camera)
+    std::vector<cv::Vec3d> rvecs, tvecs;
+    cv::aruco::estimatePoseSingleMarkers(
+        corners, markerLength, cameraMatrix, distCoeffs, rvecs, tvecs);
+
+    for (size_t i = 0; i < ids.size(); ++i) {
+
+        // Draw XYZ coordinate axes on each marker
+        // X axis = red, Y axis = green, Z axis = blue
+        cv::drawFrameAxes(annotated, cameraMatrix, distCoeffs,
+                          rvecs[i], tvecs[i], markerLength * 0.6f);
+
+        // Calculate Euclidean distance from camera to marker (in metres)
+        double distance = cv::norm(tvecs[i]);
+        
+        // Deep Analysis: Convert the 3x1 rotation vector into a 3x3 rotation matrix
+        // This allows us to extract human-readable Euler angles (Roll, Pitch, Yaw)
+        cv::Mat rotMatrix;
+        cv::Rodrigues(rvecs[i], rotMatrix);
+
+        // Extract roll, pitch, yaw from rotation matrix
+        double roll  = atan2(rotMatrix.at<double>(2, 1),
+                             rotMatrix.at<double>(2, 2)) * 180.0 / CV_PI;
+        double pitch = atan2(-rotMatrix.at<double>(2, 0),
+                             sqrt(pow(rotMatrix.at<double>(2, 1), 2) +
+                                  pow(rotMatrix.at<double>(2, 2), 2))) * 180.0 / CV_PI;
+        double yaw   = atan2(rotMatrix.at<double>(1, 0),
+                             rotMatrix.at<double>(0, 0)) * 180.0 / CV_PI;
+
+        // Display distance label near each marker
+        cv::Point2f centre(0.f, 0.f);
+        for (auto& p : corners[i]) centre += p;
+        centre *= 0.25f;
+
+        std::ostringstream distLabel;
+        distLabel << std::fixed << std::setprecision(2) << distance << "m";
+        cv::putText(annotated, distLabel.str(),
+                    cv::Point((int)(centre.x - 20), (int)(centre.y + 30)),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.55,
+                    cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
+
+        // Log pose data to console
+        std::cout << "  Pose  ID " << std::setw(3) << ids[i]
+                  << "  |  Dist: "  << std::fixed << std::setprecision(3)
+                  << distance << " m"
+                  << "  |  Roll: "  << std::setprecision(1) << roll  << "°"
+                  << "  Pitch: "    << pitch << "°"
+                  << "  Yaw: "      << yaw   << "°\n";
+    }
+}
+
 // ─── Core: process one badge image (Arihanth's Base Pipeline) ─────────────
 void processBadge(const std::string& imgPath,
                   const std::string& outDir,
                   std::ofstream&     logFile)
 {
+    // Load image from disk
     cv::Mat img = cv::imread(imgPath);
     if (img.empty()) {
         std::cerr << "[WARN] Cannot read image: " << imgPath << "\n";
@@ -100,7 +182,20 @@ void processBadge(const std::string& imgPath,
     if (!ids.empty())
         cv::aruco::drawDetectedMarkers(annotated, corners, ids);
 
-    // ── Step 4: Access level lookup per detected marker ───────────────────
+    // ── Step 4: Camera intrinsics for pose estimation ─────────────────────
+    float fx = img.cols * 1.2f;
+    cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3)
+        << fx,  0,  img.cols / 2.0,
+            0, fx,  img.rows / 2.0,
+            0,  0,  1.0);
+    cv::Mat distCoeffs = cv::Mat::zeros(4, 1, CV_64F);
+    float markerLength = 0.05f; 
+
+    // ── Step 5: Pose estimation (Adityan — PR #2) ─────────────────────────
+    estimateAndDrawPose(annotated, corners, ids,
+                        cameraMatrix, distCoeffs, markerLength);
+
+    // ── Step 6: Access level lookup per detected marker ───────────────────
     std::string overallLevel  = "DENIED";
     std::string overallZone   = "-";
     cv::Scalar  overallColour(0, 0, 180);
@@ -137,7 +232,7 @@ void processBadge(const std::string& imgPath,
                   << "  |  Zone: "  << zone << "\n";
     }
 
-    // ── Step 5: Draw access decision banner ───────────────────────────────
+    // ── Step 7: Draw access decision banner ───────────────────────────────
     bool granted = anyKnown;
 
     std::string statusText;
@@ -171,14 +266,14 @@ void processBadge(const std::string& imgPath,
                 cv::FONT_HERSHEY_SIMPLEX, 0.42,
                 cv::Scalar(190, 190, 190), 1, cv::LINE_AA);
 
-    // ── Step 6: Save annotated result ─────────────────────────────────────
+    // ── Step 8: Save annotated result ─────────────────────────────────────
     std::string base = imgPath.substr(imgPath.find_last_of("/\\") + 1);
     base = base.substr(0, base.find_last_of('.'));
     std::string outPath = outDir + "/" + base + "_result.jpg";
     cv::imwrite(outPath, annotated);
     std::cout << "  Saved: " << outPath << "\n\n";
 
-    // ── Step 7: Write JSON log entry ──────────────────────────────────────
+    // ── Step 9: Write JSON log entry ──────────────────────────────────────
     logFile << "  {\n"
             << "    \"image\": \""      << imgPath       << "\",\n"
             << "    \"timestamp\": \""  << currentTime() << "\",\n"
