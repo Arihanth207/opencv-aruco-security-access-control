@@ -7,9 +7,9 @@
  * Language : C++17
  *
  * Team:
- *   Arihanth — Core detection pipeline       (PR #1 - merged)
- *   Adityan  — Pose estimation & overlay     (PR #2 - merged)
- *   Sakthi   — Tamper detection enhancement  (PR #3 - this branch)
+ * Arihanth — Core detection pipeline       (PR #1 - merged)
+ * Adityan  — Pose estimation & overlay     (PR #2 - merged)
+ * Sakthi   — Tamper detection enhancement  (PR #3 - this branch)
  *
  * Core Method Analysed: cv::aruco::detectMarkers()
  * Enhancement Added   : detectTamper()
@@ -71,14 +71,14 @@ std::string currentTime()
  * cv::aruco::estimatePoseSingleMarkers() which internally calls solvePnP.
  *
  * solvePnP solves the Perspective-n-Point problem:
- *   Given 4 known 3D corner points of a marker and their 2D projections
- *   in the image, compute the rotation (rvec) and translation (tvec)
- *   vectors that describe the marker's pose relative to the camera.
+ * Given 4 known 3D corner points of a marker and their 2D projections
+ * in the image, compute the rotation (rvec) and translation (tvec)
+ * vectors that describe the marker's pose relative to the camera.
  *
  * Output:
- *   - 3D coordinate axes drawn on each marker (X=red, Y=green, Z=blue)
- *   - Distance from camera displayed next to each marker
- *   - Rotation angles (roll, pitch, yaw) logged to console
+ * - 3D coordinate axes drawn on each marker (X=red, Y=green, Z=blue)
+ * - Distance from camera displayed next to each marker
+ * - Rotation angles (roll, pitch, yaw) logged to console
  */
 void estimateAndDrawPose(
     cv::Mat&                                     annotated,
@@ -106,8 +106,9 @@ void estimateAndDrawPose(
 
         // Calculate Euclidean distance from camera to marker (in metres)
         double distance = cv::norm(tvecs[i]);
-
-        // Convert rotation vector to rotation matrix for angle extraction
+        
+        // Deep Analysis: Convert the 3x1 rotation vector into a 3x3 rotation matrix
+        // This allows us to extract human-readable Euler angles (Roll, Pitch, Yaw)
         cv::Mat rotMatrix;
         cv::Rodrigues(rvecs[i], rotMatrix);
 
@@ -149,22 +150,22 @@ void estimateAndDrawPose(
  * NEW METHOD added on top of the existing ArUco detection pipeline.
  *
  * Problem:
- *   An attacker could digitally composite a high-privilege marker onto
- *   a low-privilege badge, or mix two different access level markers
- *   on a single badge to try to gain unauthorised access.
+ * An attacker could digitally composite a high-privilege marker onto
+ * a low-privilege badge, or mix two different access level markers
+ * on a single badge to try to gain unauthorised access.
  *
  * Solution — Two independent checks:
  *
- *   Check 1: Proximity Analysis
- *     Computes the Euclidean distance between every pair of detected
- *     marker centres. If any two markers are closer than minDist pixels,
- *     the badge is flagged as a digitally composited fake — it would be
- *     physically impossible to print two valid markers that close together.
+ * Check 1: Proximity Analysis
+ * Computes the Euclidean distance between every pair of detected
+ * marker centres. If any two markers are closer than minDist pixels,
+ * the badge is flagged as a digitally composited fake — it would be
+ * physically impossible to print two valid markers that close together.
  *
- *   Check 2: Access-Level Consistency
- *     A genuine badge carries exactly one access tier (GUEST, STAFF or
- *     ADMIN). If markers belonging to different access levels appear on
- *     the same badge, it is flagged as a spoofing attempt.
+ * Check 2: Access-Level Consistency
+ * A genuine badge carries exactly one access tier (GUEST, STAFF or
+ * ADMIN). If markers belonging to different access levels appear on
+ * the same badge, it is flagged as a spoofing attempt.
  *
  * @param ids       Detected marker IDs
  * @param corners   Detected marker corner coordinates
@@ -172,7 +173,7 @@ void estimateAndDrawPose(
  * @param reason    Output string describing the tamper reason if detected
  *
  * @return true  = badge is clean
- *         false = tamper detected, reason is set
+ * false = tamper detected, reason is set
  */
 bool detectTamper(
     const std::vector<int>&                      ids,
@@ -233,7 +234,7 @@ bool detectTamper(
     return true;
 }
 
-// ─── Core: process one badge image ────────────────────────────────────────
+// ─── Core: process one badge image (Arihanth's Base Pipeline) ─────────────
 void processBadge(const std::string& imgPath,
                   const std::string& outDir,
                   std::ofstream&     logFile)
@@ -359,9 +360,6 @@ void processBadge(const std::string& imgPath,
     }
 
     // ── Step 8: Draw access decision banner ───────────────────────────────
-    // Entry point: scans all JPG/PNG images in images/ folder
-    // Outputs annotated results to results/ folder
-    // Logs all access decisions to results/access_log.json
     bool granted = anyKnown && clean;
 
     std::string statusText;
