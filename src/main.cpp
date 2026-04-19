@@ -8,10 +8,11 @@
  *
  * Team:
  * Arihanth — Core detection pipeline       (PR #1 - merged)
- * Adityan  — Pose estimation & overlay     (PR #2 - this branch)
- * Sakthi   — Tamper detection enhancement  (coming in PR #3)
+ * Adityan  — Pose estimation & overlay     (PR #2 - merged)
+ * Sakthi   — Tamper detection enhancement  (PR #3 - this branch)
  *
  * Core Method Analysed: cv::aruco::detectMarkers()
+ * Enhancement Added   : detectTamper()
  * ============================================================
  */
 
@@ -142,6 +143,97 @@ void estimateAndDrawPose(
     }
 }
 
+// ─── ENHANCEMENT: Tamper Detection — Added by Sakthi ──────────────────────
+/**
+ * detectTamper()
+ *
+ * NEW METHOD added on top of the existing ArUco detection pipeline.
+ *
+ * Problem:
+ * An attacker could digitally composite a high-privilege marker onto
+ * a low-privilege badge, or mix two different access level markers
+ * on a single badge to try to gain unauthorised access.
+ *
+ * Solution — Two independent checks:
+ *
+ * Check 1: Proximity Analysis
+ * Computes the Euclidean distance between every pair of detected
+ * marker centres. If any two markers are closer than minDist pixels,
+ * the badge is flagged as a digitally composited fake — it would be
+ * physically impossible to print two valid markers that close together.
+ *
+ * Check 2: Access-Level Consistency
+ * A genuine badge carries exactly one access tier (GUEST, STAFF or
+ * ADMIN). If markers belonging to different access levels appear on
+ * the same badge, it is flagged as a spoofing attempt.
+ *
+ * @param ids       Detected marker IDs
+ * @param corners   Detected marker corner coordinates
+ * @param minDist   Minimum allowed distance between marker centres (px)
+ * @param reason    Output string describing the tamper reason if detected
+ *
+ * @return true  = badge is clean
+ * false = tamper detected, reason is set
+ */
+bool detectTamper(
+    const std::vector<int>&                      ids,
+    const std::vector<std::vector<cv::Point2f>>& corners,
+    float                                        minDist,
+    std::string&                                 reason)
+{
+    // No markers detected — cannot verify badge
+    if (ids.empty()) {
+        reason = "No markers detected";
+        return false;
+    }
+
+    // Compute the centre point of each detected marker
+    // Centre = average of the 4 corner coordinates
+    std::vector<cv::Point2f> centres;
+    for (const auto& c : corners) {
+        cv::Point2f ctr(0.f, 0.f);
+        for (const auto& p : c) ctr += p;
+        centres.push_back(ctr * 0.25f);
+    }
+
+    // Check 1: Pairwise proximity between all detected markers
+    // Any pair closer than minDist pixels is flagged as a composite badge
+    for (size_t i = 0; i < centres.size(); ++i) {
+        for (size_t j = i + 1; j < centres.size(); ++j) {
+            float d = (float)cv::norm(centres[i] - centres[j]);
+            if (d < minDist) {
+                std::ostringstream ss;
+                ss << "Markers too close (" << (int)d << "px < "
+                   << (int)minDist << "px) — possible composite badge";
+                reason = ss.str();
+                return false;
+            }
+        }
+    }
+
+    // Check 2: Access-level consistency across all detected markers
+    // Mixed levels on one badge = spoofing attempt
+    std::string baseLevel;
+    for (int id : ids) {
+        auto it = ACCESS_DB.find(id);
+        if (it == ACCESS_DB.end()) continue; // skip unknown IDs
+        const std::string& lvl = it->second.level;
+        if (baseLevel.empty()) {
+            baseLevel = lvl;  // record the first level found
+            continue;
+        }
+        if (lvl != baseLevel) {
+            reason = "Mixed access levels on one badge ("
+                   + baseLevel + " & " + lvl + ") — spoofing attempt";
+            return false;
+        }
+    }
+
+    // All checks passed — badge is clean
+    reason = "OK";
+    return true;
+}
+
 // ─── Core: process one badge image (Arihanth's Base Pipeline) ─────────────
 void processBadge(const std::string& imgPath,
                   const std::string& outDir,
@@ -155,6 +247,8 @@ void processBadge(const std::string& imgPath,
     }
 
     // ── Step 1: Setup ArUco dictionary ────────────────────────────────────
+    // DICT_4X4_50: 4x4 binary grid, 50 possible IDs
+    // Chosen for badge use — compact, fast, low false-positive rate
     cv::Ptr<cv::aruco::Dictionary> dict =
         cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
 
@@ -162,13 +256,27 @@ void processBadge(const std::string& imgPath,
     cv::Ptr<cv::aruco::DetectorParameters> params =
         cv::aruco::DetectorParameters::create();
 
+    // Sub-pixel corner refinement for accurate marker localisation
     params->cornerRefinementMethod    = cv::aruco::CORNER_REFINE_SUBPIX;
+    // Adaptive threshold window range — handles varying badge print quality
     params->adaptiveThreshWinSizeMin  = 7;
     params->adaptiveThreshWinSizeMax  = 53;
     params->adaptiveThreshWinSizeStep = 10;
+    // Minimum marker size relative to image — filters out noise
     params->minMarkerPerimeterRate    = 0.02;
 
     // ── Step 3: Detect ArUco markers ──────────────────────────────────────
+    //
+    // detectMarkers() is the core method of this case study.
+    //
+    // Internally it performs:
+    //   (a) Greyscale conversion
+    //   (b) Adaptive thresholding  — isolates dark square regions
+    //   (c) Contour detection      — finds quad-shaped candidates
+    //   (d) Perspective warp       — normalises each candidate
+    //   (e) Hamming distance match — decodes binary ID from grid
+    //   (f) Sub-pixel refinement   — precise corner positions
+    //
     std::vector<int>                      ids;
     std::vector<std::vector<cv::Point2f>> corners, rejected;
 
@@ -178,24 +286,35 @@ void processBadge(const std::string& imgPath,
 
     double detMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+    // Draw detected marker borders on a copy of the image
     cv::Mat annotated = img.clone();
     if (!ids.empty())
         cv::aruco::drawDetectedMarkers(annotated, corners, ids);
 
     // ── Step 4: Camera intrinsics for pose estimation ─────────────────────
+    // Approximate intrinsics for a standard flatbed scanner / phone camera
     float fx = img.cols * 1.2f;
     cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3)
         << fx,  0,  img.cols / 2.0,
             0, fx,  img.rows / 2.0,
             0,  0,  1.0);
     cv::Mat distCoeffs = cv::Mat::zeros(4, 1, CV_64F);
-    float markerLength = 0.05f; 
+    float markerLength = 0.05f; // 5 cm real-world marker side length
 
     // ── Step 5: Pose estimation (Adityan — PR #2) ─────────────────────────
+    // Estimates 3D position and orientation of each detected marker
+    // Draws coordinate axes overlay and distance labels
     estimateAndDrawPose(annotated, corners, ids,
                         cameraMatrix, distCoeffs, markerLength);
 
-    // ── Step 6: Access level lookup per detected marker ───────────────────
+    // ── Step 6: Tamper detection (Sakthi — PR #3) ─────────────────────────
+    // Runs two checks: proximity analysis + access-level consistency
+    // Flags digitally composited or spoofed badges before granting access
+    std::string tamperReason;
+    bool clean = detectTamper(ids, corners, 80.0f, tamperReason);
+    std::cout << "  Tamper check: " << tamperReason << "\n";
+
+    // ── Step 7: Access level lookup per detected marker ───────────────────
     std::string overallLevel  = "DENIED";
     std::string overallZone   = "-";
     cv::Scalar  overallColour(0, 0, 180);
@@ -204,6 +323,7 @@ void processBadge(const std::string& imgPath,
     for (size_t i = 0; i < ids.size(); ++i) {
         int id = ids[i];
 
+        // Lookup marker ID in access database
         auto it = ACCESS_DB.find(id);
         std::string level  = (it != ACCESS_DB.end()) ? it->second.level  : "UNKNOWN";
         std::string zone   = (it != ACCESS_DB.end()) ? it->second.zone   : "-";
@@ -217,6 +337,7 @@ void processBadge(const std::string& imgPath,
             overallColour = colour;
         }
 
+        // Label each marker with its ID and access level
         cv::Point2f centre(0.f, 0.f);
         for (auto& p : corners[i]) centre += p;
         centre *= 0.25f;
@@ -232,12 +353,20 @@ void processBadge(const std::string& imgPath,
                   << "  |  Zone: "  << zone << "\n";
     }
 
-    // ── Step 7: Draw access decision banner ───────────────────────────────
-    bool granted = anyKnown;
+    // Override access if tamper detected
+    if (!clean) {
+        anyKnown     = false;
+        overallLevel = "TAMPER";
+    }
+
+    // ── Step 8: Draw access decision banner ───────────────────────────────
+    bool granted = anyKnown && clean;
 
     std::string statusText;
     if (ids.empty())
         statusText = "NO BADGE DETECTED";
+    else if (!clean)
+        statusText = "TAMPER ALERT: " + tamperReason;
     else if (!anyKnown)
         statusText = "ACCESS DENIED — Unknown badge";
     else
@@ -253,11 +382,13 @@ void processBadge(const std::string& imgPath,
                 cv::FONT_HERSHEY_SIMPLEX, 0.70,
                 cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
 
+    // Timestamp bottom-right
     cv::putText(annotated, currentTime(),
                 cv::Point(annotated.cols - 245, annotated.rows - 10),
                 cv::FONT_HERSHEY_SIMPLEX, 0.42,
                 cv::Scalar(190, 190, 190), 1, cv::LINE_AA);
 
+    // Detection stats bottom-left
     std::ostringstream stats;
     stats << "Detect: " << std::fixed << std::setprecision(1)
           << detMs << " ms  |  Markers: " << ids.size();
@@ -266,14 +397,14 @@ void processBadge(const std::string& imgPath,
                 cv::FONT_HERSHEY_SIMPLEX, 0.42,
                 cv::Scalar(190, 190, 190), 1, cv::LINE_AA);
 
-    // ── Step 8: Save annotated result ─────────────────────────────────────
+    // ── Step 9: Save annotated result ─────────────────────────────────────
     std::string base = imgPath.substr(imgPath.find_last_of("/\\") + 1);
     base = base.substr(0, base.find_last_of('.'));
     std::string outPath = outDir + "/" + base + "_result.jpg";
     cv::imwrite(outPath, annotated);
     std::cout << "  Saved: " << outPath << "\n\n";
 
-    // ── Step 9: Write JSON log entry ──────────────────────────────────────
+    // ── Step 10: Write JSON log entry ──────────────────────────────────────
     logFile << "  {\n"
             << "    \"image\": \""      << imgPath       << "\",\n"
             << "    \"timestamp\": \""  << currentTime() << "\",\n"
@@ -284,6 +415,7 @@ void processBadge(const std::string& imgPath,
     logFile << "],\n"
             << "    \"access_level\": \"" << overallLevel  << "\",\n"
             << "    \"zone\": \""          << overallZone   << "\",\n"
+            << "    \"tamper_check\": \""  << tamperReason  << "\",\n"
             << "    \"granted\": "         << (granted ? "true" : "false") << ",\n"
             << "    \"detection_ms\": "
             << std::fixed << std::setprecision(2) << detMs << "\n"
@@ -294,13 +426,14 @@ void processBadge(const std::string& imgPath,
 int main(int argc, char** argv)
 {
     // Entry point: scans all JPG/PNG images in images/ folder
-    // Outputs annotated results to results/ folder  
+    // Outputs annotated results to results/ folder
     // Logs all access decisions to results/access_log.json
     std::cout << "\n"
               << "╔══════════════════════════════════════════════════════╗\n"
               << "║  ArUco Security Access Control System — OpenCV 4.6  ║\n"
               << "╚══════════════════════════════════════════════════════╝\n\n";
 
+    // Collect input images from args or default images/ folder
     std::vector<std::string> images;
     if (argc > 1) {
         for (int i = 1; i < argc; ++i)
